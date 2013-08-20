@@ -17,6 +17,8 @@ enum {
     SVProgressHUDMaskTypeGradient // don't allow and dim the UI with a a-la-alert-view bg gradient
 };
 
+extern NSString* const SVProgressHUDDismissedByTouchNotification;
+
 typedef NSUInteger SVProgressHUDMaskType;
 
 @interface SVProgressHUD : UIView

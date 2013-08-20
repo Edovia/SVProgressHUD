@@ -8,10 +8,17 @@
 //
 
 #import "SVProgressHUD.h"
+#import "UIImage+ImageEffects.h"
 #import <QuartzCore/QuartzCore.h>
+
+NSString* const SVProgressHUDDismissedByTouchNotification = @"SVProgressHUDDismissedByTouchNotification";
 
 CGFloat SVProgressHUDRingRadius = 14;
 CGFloat SVProgressHUDRingThickness = 6;
+
+#define MOTION_EFFECT_MULTIPLIER 9
+
+static SVProgressHUD *sharedView;
 
 @interface SVProgressHUD ()
 
@@ -19,7 +26,7 @@ CGFloat SVProgressHUDRingThickness = 6;
 @property (nonatomic, strong, readonly) NSTimer *fadeOutTimer;
 
 @property (nonatomic, strong, readonly) UIWindow *overlayWindow;
-@property (nonatomic, strong, readonly) UIView *hudView;
+@property (nonatomic, strong, readonly) UIImageView *hudView;
 @property (nonatomic, strong, readonly) UILabel *stringLabel;
 @property (nonatomic, strong, readonly) UIImageView *imageView;
 @property (nonatomic, strong, readonly) UIActivityIndicatorView *spinnerView;
@@ -56,7 +63,6 @@ CGFloat SVProgressHUDRingThickness = 6;
 
 + (SVProgressHUD*)sharedView {
     static dispatch_once_t once;
-    static SVProgressHUD *sharedView;
     dispatch_once(&once, ^ { sharedView = [[SVProgressHUD alloc] initWithFrame:[[UIScreen mainScreen] bounds]]; });
     return sharedView;
 }
@@ -120,6 +126,13 @@ CGFloat SVProgressHUDRingThickness = 6;
     [[SVProgressHUD sharedView] showImage:image status:string duration:1.0];
 }
 
+- (void)touchesBegan:(NSSet *)touches withEvent:(UIEvent *)event {
+    if (self.overlayWindow.userInteractionEnabled) {
+        [[SVProgressHUD sharedView] dismiss];
+        [[NSNotificationCenter defaultCenter] postNotificationName:SVProgressHUDDismissedByTouchNotification object:self];
+    }
+}
+
 
 #pragma mark - Dismiss Methods
 
@@ -146,15 +159,17 @@ CGFloat SVProgressHUDRingThickness = 6;
 
 #pragma mark - Instance Methods
 
+- (BOOL)iOS7Style {
+    return [[[UIApplication sharedApplication].delegate window] respondsToSelector:@selector(drawViewHierarchyInRect:afterScreenUpdates:)];
+}
+
 - (id)initWithFrame:(CGRect)frame {
-	
     if ((self = [super initWithFrame:frame])) {
-		self.userInteractionEnabled = NO;
+		self.userInteractionEnabled = YES;
         self.backgroundColor = [UIColor clearColor];
 		self.alpha = 0;
         self.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     }
-	
     return self;
 }
 
@@ -246,7 +261,6 @@ CGFloat SVProgressHUDRingThickness = 6;
         if(self.progress != -1)
             self.backgroundRingLayer.position = self.ringLayer.position = CGPointMake((CGRectGetWidth(self.hudView.bounds)/2), CGRectGetWidth(self.hudView.bounds)/2-SVProgressHUDRingRadius);
     }
-    
 }
 
 - (void)setStatus:(NSString *)string {
@@ -395,7 +409,7 @@ CGFloat SVProgressHUDRingThickness = 6;
     self.stringLabel.text = string;
     [self updatePosition];
     
-    if(progress >= 0) {
+    if (progress >= 0) {
         self.imageView.image = nil;
         self.imageView.hidden = NO;
         [self.spinnerView stopAnimating];
@@ -406,7 +420,7 @@ CGFloat SVProgressHUDRingThickness = 6;
         [self.spinnerView startAnimating];
     }
     
-    if(self.maskType != SVProgressHUDMaskTypeNone) {
+    if (self.maskType != SVProgressHUDMaskTypeNone) {
         self.overlayWindow.userInteractionEnabled = YES;
         self.accessibilityLabel = string;
         self.isAccessibilityElement = YES;
@@ -420,7 +434,45 @@ CGFloat SVProgressHUDRingThickness = 6;
     [self.overlayWindow setHidden:NO];
     [self positionHUD:nil];
     
-    if(self.alpha != 1) {
+    if (!self.hudView.image && [self iOS7Style]) {
+        UIWindow* mainWindow = [[UIApplication sharedApplication].delegate window];
+        UIGraphicsBeginImageContextWithOptions(mainWindow.frame.size, YES, 0.0);
+        CGContextSetInterpolationQuality(UIGraphicsGetCurrentContext(), kCGInterpolationHigh);
+        [mainWindow drawViewHierarchyInRect:mainWindow.frame afterScreenUpdates:YES];
+        UIImage *snapshot = UIGraphicsGetImageFromCurrentImageContext();
+        UIGraphicsEndImageContext();
+        
+        CGFloat scale = [UIScreen mainScreen].scale;
+        CGRect frame = CGRectMake(self.hudView.frame.origin.x * scale,
+                                  self.hudView.frame.origin.y * scale,
+                                  self.hudView.frame.size.width * scale,
+                                  self.hudView.frame.size.height * scale);
+        
+        CGImageRef imageRef = CGImageCreateWithImageInRect([snapshot CGImage], frame);
+        UIImage* croppedSnapshot = [UIImage imageWithCGImage:imageRef scale:scale orientation:UIImageOrientationUp];
+        CGImageRelease(imageRef);
+        
+        UIImage* blurredSnapshot = [croppedSnapshot applyBlurWithRadius:5 tintColor:[UIColor colorWithWhite:0.97 alpha:0.82] saturationDeltaFactor:1.8 maskImage:nil];
+        
+        self.hudView.image = blurredSnapshot;
+        self.hudView.layer.cornerRadius = SVProgressHUDRingRadius;
+        self.hudView.layer.masksToBounds = YES;
+        
+        // Add the motion effect
+        UIInterpolatingMotionEffect *imageMotionEffectH = [[UIInterpolatingMotionEffect alloc] initWithKeyPath:@"center.x" type:UIInterpolatingMotionEffectTypeTiltAlongHorizontalAxis];
+        imageMotionEffectH.minimumRelativeValue = @(MOTION_EFFECT_MULTIPLIER);
+        imageMotionEffectH.maximumRelativeValue = @(-MOTION_EFFECT_MULTIPLIER);
+        
+        UIInterpolatingMotionEffect *imageMotionEffectV = [[UIInterpolatingMotionEffect alloc] initWithKeyPath:@"center.y" type:UIInterpolatingMotionEffectTypeTiltAlongVerticalAxis];
+        imageMotionEffectV.minimumRelativeValue = @(-MOTION_EFFECT_MULTIPLIER);
+        imageMotionEffectV.maximumRelativeValue = @(MOTION_EFFECT_MULTIPLIER);
+        
+        UIMotionEffectGroup *imageMotionEffectGroup = [UIMotionEffectGroup new];
+        imageMotionEffectGroup.motionEffects = @[imageMotionEffectH, imageMotionEffectV];
+        [self.hudView addMotionEffect:imageMotionEffectGroup];
+    }
+    
+    if (self.alpha != 1) {
         [self registerNotifications];
         self.hudView.transform = CGAffineTransformScale(self.hudView.transform, 1.3, 1.3);
 
@@ -475,6 +527,7 @@ CGFloat SVProgressHUDRingThickness = 6;
                              
                              [overlayWindow removeFromSuperview];
                              overlayWindow = nil;
+                             self.hudView.image = nil;
                              
                              // fixes bug where keyboard wouldn't return as keyWindow upon dismissal of HUD
                              [[UIApplication sharedApplication].windows enumerateObjectsWithOptions:NSEnumerationReverse usingBlock:^(id window, NSUInteger idx, BOOL *stop) {
@@ -592,7 +645,7 @@ CGFloat SVProgressHUDRingThickness = 6;
         overlayWindow = [[UIWindow alloc] initWithFrame:[UIScreen mainScreen].bounds];
         overlayWindow.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
         overlayWindow.backgroundColor = [UIColor clearColor];
-        overlayWindow.userInteractionEnabled = NO;
+        overlayWindow.userInteractionEnabled = YES;
         overlayWindow.windowLevel = UIWindowLevelStatusBar;
     }
     return overlayWindow;
@@ -600,7 +653,7 @@ CGFloat SVProgressHUDRingThickness = 6;
 
 - (UIView *)hudView {
     if(!hudView) {
-        hudView = [[UIView alloc] initWithFrame:CGRectZero];
+        hudView = [[UIImageView alloc] initWithFrame:CGRectZero];
         hudView.layer.cornerRadius = 10;
 		hudView.backgroundColor = [UIColor colorWithWhite:0 alpha:0.8];
         hudView.autoresizingMask = (UIViewAutoresizingFlexibleBottomMargin | UIViewAutoresizingFlexibleTopMargin |
@@ -614,7 +667,7 @@ CGFloat SVProgressHUDRingThickness = 6;
 - (UILabel *)stringLabel {
     if (stringLabel == nil) {
         stringLabel = [[UILabel alloc] initWithFrame:CGRectZero];
-		stringLabel.textColor = [UIColor whiteColor];
+		stringLabel.textColor = [self iOS7Style] ? [UIColor blackColor] : [UIColor whiteColor];
 		stringLabel.backgroundColor = [UIColor clearColor];
 		stringLabel.adjustsFontSizeToFitWidth = YES;
 		#if __IPHONE_OS_VERSION_MIN_REQUIRED < 60000
@@ -624,8 +677,11 @@ CGFloat SVProgressHUDRingThickness = 6;
 		#endif
 		stringLabel.baselineAdjustment = UIBaselineAdjustmentAlignCenters;
 		stringLabel.font = [UIFont boldSystemFontOfSize:16];
-		stringLabel.shadowColor = [UIColor blackColor];
-		stringLabel.shadowOffset = CGSizeMake(0, -1);
+		
+        if (![self iOS7Style]) {
+            stringLabel.shadowColor = [UIColor blackColor];
+            stringLabel.shadowOffset = CGSizeMake(0, -1);
+        }
         stringLabel.numberOfLines = 0;
     }
     
@@ -650,6 +706,10 @@ CGFloat SVProgressHUDRingThickness = 6;
         spinnerView = [[UIActivityIndicatorView alloc] initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleWhiteLarge];
 		spinnerView.hidesWhenStopped = YES;
 		spinnerView.bounds = CGRectMake(0, 0, 37, 37);
+        
+        if ([self iOS7Style]) {
+            spinnerView.color = [UIColor blackColor];
+        }
     }
     
     if(!spinnerView.superview)
